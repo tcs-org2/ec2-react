@@ -33,7 +33,7 @@ jobs:
         run: npm ci
 
       - name: Test
-        run: npm test --silent
+        run: npm test --silent --if-present
 
       # - name: Build
       #   env:
