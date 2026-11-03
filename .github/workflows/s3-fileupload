@@ -1,0 +1,65 @@
+name: Deploy (frontend)
+
+# Auto-deploy on prod-main push disabled: Actions minutes exhausted. Production
+# is deployed from the laptop via infra/scripts/deploy.sh. Re-enable the
+# commented push trigger once minutes are restored. Still runnable manually.
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [prod-main]
+
+# Only one deploy at a time per ref. New pushes wait; nothing is cancelled mid-flight.
+concurrency:
+  group: deploy-frontend-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test --silent
+
+      # - name: Build
+      #   env:
+      #     VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      #     VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+      #   run: npm run build
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Sync to S3
+        run: aws s3 sync dist/ s3://${{ vars.S3_BUCKET }}/ --delete --no-progress
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ vars.CLOUDFRONT_DIST }} \
+            --paths '/*' \
+            --query 'Invalidation.Id' --output text
+
+      - name: Smoke test
+        run: |
+          # Wait briefly for invalidation to propagate to most edges.
+          sleep 15
+          curl -fsS https://vaagon.ai/ > /dev/null
+          echo "Frontend reachable"
