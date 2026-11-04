@@ -8,7 +8,7 @@ on:
   # push:
   #   branches: [prod-main]
 
-# Only one deploy at a time per ref. New pushes wait; nothing is cancelled mid-flight.
+# Only one deploy at a time per ref. New pushes wait; nothing is cancelled mid-flight test.
 concurrency:
   group: deploy-frontend-${{ github.ref }}
   cancel-in-progress: false
