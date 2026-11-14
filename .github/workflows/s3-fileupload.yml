@@ -21,6 +21,7 @@ on:
         default: stage
 
 # Prevent concurrent deployments to the same environment.
+#Test for retriggering
 concurrency:
   group: deploy-frontend-${{ github.ref }}
   cancel-in-progress: false
