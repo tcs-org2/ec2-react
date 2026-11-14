@@ -1,4 +1,4 @@
-name: Deploy (frontend)
+name: Deploy FE vaagon
 
 # Auto-deploy on prod-main push disabled: Actions minutes exhausted. Production
 # is deployed from the laptop via infra/scripts/deploy.sh. Re-enable the
