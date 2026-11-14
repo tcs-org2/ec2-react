@@ -1,12 +1,26 @@
+
 name: Deploy FE vaagon
 
-
 on:
-  workflow_dispatch:
-  # push:
-  #   branches: [prod-main]
+  push:
+    branches:
+      - main
 
-# Only one deploy at a time per ref. New pushes wait; nothing is cancelled mid-flight test.
+  release:
+    types: [published]
+
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Select deployment environment
+        required: true
+        type: choice
+        options:
+          - stage
+          - production
+        default: stage
+
+# Prevent concurrent deployments to the same environment.
 concurrency:
   group: deploy-frontend-${{ github.ref }}
   cancel-in-progress: false
@@ -17,58 +31,86 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+
+    # Automatically determine the target environment.
+    environment:
+      name: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'production')) && 'production' || 'stage' }}
+
+    env:
+      AWS_PAGER: ""
+      AWS_CLI_AUTO_PROMPT: "off"
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
+          cache: npm
 
-      - name: Install
+      - name: Install dependencies
         run: npm ci
 
-      - name: Test
+      - name: Run tests
         run: npm test --silent --if-present
 
-      - name: Build
-      #   env:
-      #     VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-      #     VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+      # Build using environment-specific backend API URL.
+      - name: Build Application
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
         run: npm run build
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
-          
-      - name: Build Application
-        run: npm run build    
 
-        #Use the Install AWS CLI steps for local only. Comment out the below 4 lines when running in 
-        #remote EC2 since all the required softwares are already installed.
-
-      - name: Install AWS CLI
+      # Keep this step for local act testing.
+      # GitHub ubuntu-latest runners generally already have AWS CLI.
+      - name: Install AWS CLI (if missing)
         run: |
-           sudo apt-get update
-           sudo apt-get install -y awscli  
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          fi
 
-      # - name: Sync to S3
-      #   run: aws s3 sync dist/ s3://${{ vars.S3_BUCKET }}/ --delete --no-progress
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
+
+      - name: Sync to S3
+        run: |
+          aws s3 sync dist/ s3://${{ vars.S3_BUCKET }}/ \
+            --delete \
+            --no-progress
 
       - name: Invalidate CloudFront
+        id: invalidate
         run: |
-          aws --no-cli-pager  cloudfront create-invalidation \
-            --distribution-id ${{ vars.CLOUDFRONT_DIST }} \
-            --paths '/*' \
-            --query 'Invalidation.Id' --output text
+          INVALIDATION_ID=$(aws --no-cli-pager cloudfront create-invalidation \
+            --distribution-id "${{ vars.CLOUDFRONT_DIST }}" \
+            --paths "/*" \
+            --query 'Invalidation.Id' \
+            --output text)
 
-      - name: Smoke test
+          echo "Invalidation ID: $INVALIDATION_ID"
+          echo "invalidation_id=$INVALIDATION_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke Test
         run: |
-          # Wait briefly for invalidation to propagate to most edges.
           sleep 15
-          curl -fsS https://vaagon.ai/ > /dev/null
-          echo "Frontend reachable"
+          curl -fsS "${{ vars.FRONTEND_URL }}/" > /dev/null
+          echo "Frontend reachable: ${{ vars.FRONTEND_URL }}"
+
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo "Deployment successful!"
+          echo "Environment: ${{ job.environment }}"
+          echo "S3 Bucket: ${{ vars.S3_BUCKET }}"
+          echo "CloudFront: ${{ vars.CLOUDFRONT_DIST }}"
