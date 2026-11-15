@@ -2,13 +2,11 @@
 name: Deploy FE vaagon
 
 on:
-  push:
-    branches:
-      - main
-
+  # Deploy based on GitHub Release publication.
   release:
-    types: [published]
+    types: [published, released]
 
+  # Manual deployment when required.
   workflow_dispatch:
     inputs:
       target:
@@ -20,10 +18,13 @@ on:
           - production
         default: stage
 
-# Prevent concurrent deployments to the same environment.
-#Test for retriggering
+# Determine target environment from the release type.
+# Pre-release = stage
+# Normal release = production
+# Manual = selected environment
+
 concurrency:
-  group: deploy-frontend-${{ github.ref }}
+  group: deploy-frontend-${{ github.event_name == 'workflow_dispatch' && inputs.target || (github.event.release.prerelease && 'stage' || 'production') }}
   cancel-in-progress: false
 
 permissions:
@@ -34,17 +35,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    # Automatically determine the target environment.
+    # Automatically select GitHub Environment.
     environment:
-      name: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'production')) && 'production' || 'stage' }}
+      name: ${{ github.event_name == 'workflow_dispatch' && inputs.target || (github.event.release.prerelease && 'stage' || 'production') }}
 
     env:
       AWS_PAGER: ""
       AWS_CLI_AUTO_PROMPT: "off"
+      DEPLOY_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.target || (github.event.release.prerelease && 'stage' || 'production') }}
 
     steps:
+      # Checkout the exact release tag.
+      # For manual execution, checkout the selected branch/ref.
       - name: Checkout source code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+
+      - name: Display deployment details
+        run: |
+          echo "================================"
+          echo "Deployment Environment: $DEPLOY_ENV"
+          echo "Release: ${{ github.event.release.tag_name }}"
+          echo "Release Type: ${{ github.event.release.prerelease && 'PRE-RELEASE' || 'PRODUCTION RELEASE' }}"
+          echo "Commit: $GITHUB_SHA"
+          echo "================================"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -112,6 +127,8 @@ jobs:
         if: success()
         run: |
           echo "Deployment successful!"
-          echo "Environment: ${{ job.environment }}"
+          echo "Environment: $DEPLOY_ENV"
+          echo "Release: ${{ github.event.release.tag_name }}"
           echo "S3 Bucket: ${{ vars.S3_BUCKET }}"
           echo "CloudFront: ${{ vars.CLOUDFRONT_DIST }}"
+          echo "Invalidation ID: ${{ steps.invalidate.outputs.invalidation_id }}"
